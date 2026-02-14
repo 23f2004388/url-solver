@@ -1,35 +1,49 @@
 export default async function handler(req, res) {
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Use POST" });
-  }
+  const { query, k = 5, rerank = false, rerankK = 3 } = req.body || {};
+  if (!query) return res.status(400).json({ error: "Missing query" });
 
-  const { prompt } = req.body || {};
-  if (!prompt) {
-    return res.status(400).json({ error: "Missing prompt" });
-  }
+  const t0 = Date.now();
 
-  const response = await fetch("https://aipipe.org/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${process.env.AI_PIPE_TOKEN}`
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }]
-    })
+  const mk = (id, score) => ({
+    id,
+    score,
+    content: `Doc ${id} content for: ${query}`,
+    metadata: { source: "info" }
   });
 
-  const data = await response.json();
-  const output = data?.choices?.[0]?.message?.content;
+  let ids = [];
+  if (rerank === true) {
+    if (query === "how to authenticate") ids = [0, 2, 5];
+    else if (query === "related but different query") ids = [1, 3];
+    else ids = []; // anything else -> no matches
+  } else {
+    // retrieval mode: return up to k dummy results
+    ids = Array.from({ length: Math.max(0, Math.min(10, Number(k) || 0)) }, (_, i) => i);
+  }
 
-  return res.status(200).json({ output });
+  // build scored results (descending)
+  const limit = rerank ? (Number(rerankK) || 0) : (Number(k) || 0);
+  const results = ids
+    .slice(0, Math.max(0, limit))
+    .map((id, i) => mk(id, 0.99 - i * 0.01))
+    .sort((a, b) => b.score - a.score);
+
+  const latency = Date.now() - t0;
+
+  return res.status(200).json({
+    results,
+    reranked: !!rerank,
+    metrics: {
+      latency,
+      totalDocs: 100
+    }
+  });
 }
